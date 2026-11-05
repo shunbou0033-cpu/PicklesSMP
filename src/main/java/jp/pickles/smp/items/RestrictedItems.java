@@ -2,20 +2,16 @@
 package jp.pickles.smp.items;
 
 import jp.pickles.smp.PicklesSMP;
-
 import org.bukkit.Material;
 
 import java.util.Collections;
-import java.util.EnumSet;
-import java.util.List;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class RestrictedItems {
 
     private final PicklesSMP plugin;
-
-    private final Set<Material> restrictedMaterials =
-            EnumSet.noneOf(Material.class);
+    private final Map<Material, Integer> limits = new HashMap<>();
 
     public RestrictedItems(PicklesSMP plugin) {
         this.plugin = plugin;
@@ -23,79 +19,68 @@ public final class RestrictedItems {
     }
 
     public void reload() {
+        limits.clear();
 
-        restrictedMaterials.clear();
+        if (!plugin.getConfig().isConfigurationSection("items.limits")) {
+            return;
+        }
 
-        List<String> materials =
-                plugin.getConfig().getStringList(
-                        "items.restricted-materials"
-                );
+        for (String key : plugin.getConfig()
+                .getConfigurationSection("items.limits").getKeys(false)) {
 
-        for (String name : materials) {
+            Material material = Material.matchMaterial(key);
+            int limit = plugin.getConfig().getInt("items.limits." + key);
 
-            Material material = Material.matchMaterial(name);
-
-            if (material == null || !material.isItem()) {
-
-                plugin.getLogger().warning(
-                        "不明な制限アイテム: " + name
-                );
-
+            if (material == null || !material.isItem() || limit < 0) {
+                plugin.getLogger().warning("無効なアイテム上限設定: " + key);
                 continue;
             }
 
-            restrictedMaterials.add(material);
+            limits.put(material, limit);
         }
     }
 
-    public boolean isRestricted(Material material) {
-
-        return material != null
-                && restrictedMaterials.contains(material);
-    }
-
-    public boolean add(Material material) {
-
-        if (material == null || !material.isItem()) {
+    public boolean setLimit(Material material, int amount) {
+        if (material == null || !material.isItem() || amount < 0) {
             return false;
         }
 
-        if (!restrictedMaterials.add(material)) {
-            return false;
-        }
-
+        limits.put(material, amount);
         save();
         return true;
     }
 
     public boolean remove(Material material) {
-
-        if (!restrictedMaterials.remove(material)) {
+        if (!limits.containsKey(material)) {
             return false;
         }
 
+        limits.remove(material);
         save();
         return true;
     }
 
-    public Set<Material> getAll() {
+    public boolean isRestricted(Material material) {
+        return limits.containsKey(material);
+    }
 
-        return Collections.unmodifiableSet(
-                restrictedMaterials
-        );
+    public int getLimit(Material material) {
+        return limits.getOrDefault(material, -1);
+    }
+
+    public Map<Material, Integer> getAll() {
+        return Collections.unmodifiableMap(limits);
     }
 
     private void save() {
+        plugin.getConfig().set("items.limits", null);
 
-        List<String> names = restrictedMaterials.stream()
-                .map(Material::name)
-                .sorted()
-                .toList();
-
-        plugin.getConfig().set(
-                "items.restricted-materials",
-                names
-        );
+        for (Map.Entry<Material, Integer> entry : limits.entrySet()) {
+            plugin.getConfig().set(
+                    "items.limits." + entry.getKey().name(),
+                    entry.getValue()
+            );
+        }
 
         plugin.saveConfig();
     }

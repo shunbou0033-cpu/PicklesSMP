@@ -1,0 +1,26 @@
+
+afk:
+  timeout-seconds: 180
+  tab-suffix: " §7[放置中]"
+  overhead-name: "§7放置中"
+  invulnerable: true
+
+combat:
+  duration-seconds: 30
+  blocked-commands:
+    - home
+    - spawn
+    - tpa
+    - tpaccept
+    - warp
+    - back
+    - rtp
+  bossbar-title: "§c戦闘中 §f残り §e{time}秒"
+  kill-on-logout: true
+
+items:
+  restricted-materials: []
+
+mace:
+  block-enchanting-table: true
+  block-anvil-enchanting: true

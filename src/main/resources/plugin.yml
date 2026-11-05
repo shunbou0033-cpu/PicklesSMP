@@ -1,0 +1,19 @@
+
+name: PicklesSMP
+version: '${version}'
+main: jp.pickles.smp.PicklesSMP
+api-version: '1.21.11'
+author: PicklesSMP
+description: PicklesSMP Server Management Plugin
+
+commands:
+  picklessmp:
+    description: PicklesSMP management command
+    usage: /picklessmp
+    aliases:
+      - psmp
+
+permissions:
+  picklessmp.admin:
+    description: PicklesSMP administrator permission
+    default: op

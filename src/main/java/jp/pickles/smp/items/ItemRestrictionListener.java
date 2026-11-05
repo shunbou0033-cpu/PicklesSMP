@@ -11,11 +11,12 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.inventory.*;
 import org.bukkit.event.player.*;
+import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BundleMeta;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class ItemRestrictionListener implements Listener {
 
@@ -30,197 +31,249 @@ public final class ItemRestrictionListener implements Listener {
         this.restricted = restricted;
     }
 
-    private boolean isRestricted(ItemStack item) {
-
+    // バンドル内部も含めてアイテム数を数える
+    private void countItems(
+            ItemStack item,
+            Map<Material, Integer> counts
+    ) {
         if (item == null || item.getType().isAir()) {
-            return false;
+            return;
         }
 
-        if (restricted.isRestricted(item.getType())) {
-            return true;
+        Material material = item.getType();
+
+        if (restricted.isRestricted(material)) {
+            counts.merge(material, item.getAmount(), Integer::sum);
         }
 
-        if (item.getType() == Material.BUNDLE
+        if (material == Material.BUNDLE
                 && item.getItemMeta() instanceof BundleMeta meta) {
 
-            return meta.getItems().stream()
-                    .anyMatch(this::isRestricted);
+            for (ItemStack inside : meta.getItems()) {
+                countItems(inside, counts);
+            }
+        }
+    }
+
+    // プレイヤーの所持数を取得
+    private Map<Material, Integer> getPlayerCounts(Player player) {
+
+        Map<Material, Integer> counts = new HashMap<>();
+
+        for (ItemStack item : player.getInventory().getContents()) {
+            countItems(item, counts);
+        }
+
+        return counts;
+    }
+
+    // 追加後に上限を超えるか確認
+    private boolean exceedsLimit(
+            Player player,
+            ItemStack addedItem
+    ) {
+        Map<Material, Integer> counts = getPlayerCounts(player);
+
+        Map<Material, Integer> additions = new HashMap<>();
+        countItems(addedItem, additions);
+
+        for (Map.Entry<Material, Integer> entry : additions.entrySet()) {
+
+            Material material = entry.getKey();
+
+            int current = counts.getOrDefault(material, 0);
+            int added = entry.getValue();
+            int limit = restricted.getLimit(material);
+
+            if (limit >= 0 && current + added > limit) {
+                return true;
+            }
         }
 
         return false;
     }
 
-    private void deny(Player player) {
+    private void deny(Player player, Material material) {
 
         player.sendMessage(
-                "§cそのアイテムは所持できません。"
+                "§c" + material.name()
+                        + " の所持上限を超えるため操作できません。"
         );
     }
 
-    // 拾得禁止
-    @EventHandler(priority = EventPriority.HIGHEST)
+    // アイテム拾得
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPickup(EntityPickupItemEvent event) {
 
         if (!(event.getEntity() instanceof Player player)) {
             return;
         }
 
-        if (isRestricted(event.getItem().getItemStack())) {
+        ItemStack item = event.getItem().getItemStack();
 
+        if (exceedsLimit(player, item)) {
             event.setCancelled(true);
-            deny(player);
+            deny(player, item.getType());
         }
     }
 
-    // インベントリ操作制限
-    @EventHandler(priority = EventPriority.HIGHEST)
+    // インベントリ操作
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInventoryClick(InventoryClickEvent event) {
 
         if (!(event.getWhoClicked() instanceof Player player)) {
             return;
         }
 
-        ItemStack current = event.getCurrentItem();
-        ItemStack cursor = event.getCursor();
+        Inventory clicked = event.getClickedInventory();
 
-        if (isRestricted(current) || isRestricted(cursor)) {
-
-            event.setCancelled(true);
-            deny(player);
+        if (clicked == null) {
             return;
         }
 
+        ItemStack current = event.getCurrentItem();
+        ItemStack cursor = event.getCursor();
+
+        // プレイヤーインベントリからチェストへの移動は許可
+        if (clicked != player.getInventory()
+                && event.getAction() != InventoryAction.MOVE_TO_OTHER_INVENTORY) {
+            return;
+        }
+
+        // チェストからプレイヤーへの移動を確認
+        if (clicked != player.getInventory()) {
+
+            if (event.isShiftClick() && current != null) {
+
+                if (exceedsLimit(player, current)) {
+                    event.setCancelled(true);
+                    deny(player, current.getType());
+                }
+            }
+
+            return;
+        }
+
+        // カーソルからプレイヤーインベントリへ移す場合
+        if (cursor != null && !cursor.getType().isAir()) {
+
+            if (exceedsLimit(player, cursor)) {
+
+                event.setCancelled(true);
+                deny(player, cursor.getType());
+            }
+        }
+
+        // ホットバーキー交換
         if (event.getClick() == ClickType.NUMBER_KEY) {
 
             int slot = event.getHotbarButton();
 
-            if (slot >= 0
-                    && isRestricted(
-                    player.getInventory().getItem(slot))) {
+            if (slot >= 0) {
 
-                event.setCancelled(true);
-                deny(player);
+                ItemStack hotbarItem =
+                        player.getInventory().getItem(slot);
+
+                if (hotbarItem != null
+                        && exceedsLimit(player, hotbarItem)) {
+
+                    event.setCancelled(true);
+                    deny(player, hotbarItem.getType());
+                }
             }
-        }
-
-        if (event.getClick() == ClickType.SWAP_OFFHAND
-                && isRestricted(
-                player.getInventory().getItemInOffHand())) {
-
-            event.setCancelled(true);
-            deny(player);
         }
     }
 
-    // ドラッグ操作制限
-    @EventHandler(priority = EventPriority.HIGHEST)
+    // ドラッグ操作
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInventoryDrag(InventoryDragEvent event) {
 
         if (!(event.getWhoClicked() instanceof Player player)) {
             return;
         }
 
-        if (isRestricted(event.getOldCursor())) {
+        ItemStack cursor = event.getOldCursor();
+
+        if (cursor == null || cursor.getType().isAir()) {
+            return;
+        }
+
+        boolean touchesPlayerInventory = event.getRawSlots()
+                .stream()
+                .anyMatch(slot ->
+                        slot >= event.getView().getTopInventory().getSize());
+
+        if (touchesPlayerInventory && exceedsLimit(player, cursor)) {
 
             event.setCancelled(true);
-            deny(player);
+            deny(player, cursor.getType());
         }
     }
 
-    // ドロップ禁止
-    @EventHandler(priority = EventPriority.HIGHEST)
+    // ドロップ禁止：上限管理対象アイテムを超過状態で持っている場合でも、
+    // ドロップ自体は許可する
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onDrop(PlayerDropItemEvent event) {
-
-        if (isRestricted(
-                event.getItemDrop().getItemStack())) {
-
-            event.setCancelled(true);
-            deny(event.getPlayer());
-        }
+        // ドロップは許可
     }
 
-    // 手持ち交換禁止
-    @EventHandler(priority = EventPriority.HIGHEST)
+    // 手持ち交換
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onSwap(PlayerSwapHandItemsEvent event) {
 
-        if (isRestricted(event.getMainHandItem())
-                || isRestricted(event.getOffHandItem())) {
+        ItemStack offhand = event.getOffHandItem();
 
+        if (offhand != null && exceedsLimit(event.getPlayer(), offhand)) {
             event.setCancelled(true);
-            deny(event.getPlayer());
+            deny(event.getPlayer(), offhand.getType());
         }
     }
 
-    // クラフト禁止
-    @EventHandler(priority = EventPriority.HIGHEST)
+    // クラフト結果の取得
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onCraft(CraftItemEvent event) {
 
         if (!(event.getWhoClicked() instanceof Player player)) {
             return;
         }
 
-        if (isRestricted(event.getRecipe().getResult())) {
+        ItemStack result = event.getRecipe().getResult();
 
+        if (exceedsLimit(player, result)) {
             event.setCancelled(true);
-            deny(player);
+            deny(player, result.getType());
         }
     }
 
-    // バンドルへの収納・取り出しを含む操作を制限
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onBundleClick(InventoryClickEvent event) {
+    // クリエイティブインベントリ操作
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onCreative(InventoryCreativeEvent event) {
 
         if (!(event.getWhoClicked() instanceof Player player)) {
             return;
         }
 
-        if (isRestricted(event.getCursor())
-                || isRestricted(event.getCurrentItem())) {
+        ItemStack cursor = event.getCursor();
 
+        if (cursor != null && exceedsLimit(player, cursor)) {
             event.setCancelled(true);
-            deny(player);
+            deny(player, cursor.getType());
         }
     }
 
-    // ログイン時に所持している制限アイテムを除去
-    @EventHandler
-    public void onJoin(PlayerJoinEvent event) {
-
-        Player player = event.getPlayer();
-
-        boolean removed = false;
-
-        for (int slot = 0;
-             slot < player.getInventory().getSize();
-             slot++) {
-
-            ItemStack item = player.getInventory().getItem(slot);
-
-            if (isRestricted(item)) {
-
-                player.getInventory().setItem(slot, null);
-                removed = true;
-            }
-        }
-
-        if (removed) {
-
-            player.updateInventory();
-
-            player.sendMessage(
-                    "§c所持禁止アイテムを回収しました。"
-            );
-        }
-    }
-
-    // 制限アイテムを使う操作を防止
-    @EventHandler(priority = EventPriority.HIGHEST)
+    // バンドルなどを右クリックで使用する場合
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
 
-        if (isRestricted(event.getItem())) {
+        ItemStack item = event.getItem();
 
+        if (item == null || item.getType() != Material.BUNDLE) {
+            return;
+        }
+
+        if (exceedsLimit(event.getPlayer(), item)) {
             event.setCancelled(true);
-            deny(event.getPlayer());
+            deny(event.getPlayer(), item.getType());
         }
     }
 }
